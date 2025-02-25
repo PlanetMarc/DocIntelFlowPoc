@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿using System;
+﻿﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -11,7 +11,7 @@ namespace PlanetTech.AI.DocIntelFlowPoc
 {
     class Program
     {
-        static string key = "";
+        static string key = "XXX";
         static string endpoint = "https://demo-ak-dot.cognitiveservices.azure.com/";
         static AzureKeyCredential _credential = new AzureKeyCredential(key);
         static DocumentIntelligenceClient _docIntelClient = new DocumentIntelligenceClient(new Uri(endpoint), _credential);
