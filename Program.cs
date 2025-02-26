@@ -53,13 +53,30 @@ namespace PlanetTech.AI.DocIntelFlowPoc
             }
 
             // No additional checks; defaults will be used if -pattern is not provided.
-            IEnumerable<string> files = FindFiles(directoryPath, filePattern, scanLimit);
+            int totalFilesFound;
+            IEnumerable<string> files = FindFiles(directoryPath, filePattern, out totalFilesFound, scanLimit);
+            Console.WriteLine($"Found {totalFilesFound} files matching pattern '{filePattern}' in '{directoryPath}'.");
 
+            // Found files?
+            if (files.Any())
+            {
+                if (scanLimit < int.MaxValue) // user specified a limit to scan
+                {
+                    Console.WriteLine($"Scanning only the first {scanLimit} files.");
+                    totalFilesFound = scanLimit;
+                }
+                Console.WriteLine("Beginning analysis...");
+            }
+
+            DateTime startTime = DateTime.Now;
             foreach (string file in files)
             {
                 Console.WriteLine(file);
                 AnalyzeDocumentAsync(file).Wait();
             }
+            TimeSpan duration = DateTime.Now - startTime;
+            
+            Console.WriteLine($"Processed {scanLimit} documents successfully in {duration.Seconds} seconds.");
         }
 
         public static async Task AnalyzeDocumentAsync(string document)
@@ -80,40 +97,41 @@ namespace PlanetTech.AI.DocIntelFlowPoc
                 }
             });
 
-            Operation<AnalyzeResult> operation = await _docIntelClient.AnalyzeDocumentAsync(WaitUntil.Completed, "prebuilt-read", BinaryData.FromBytes(docFileBytes));
+            Operation<AnalyzeResult> operation = await _docIntelClient.AnalyzeDocumentAsync(WaitUntil.Completed, "prebuilt-read", BinaryData.FromBytes(docFileBytes), cts.Token);
             cts.Cancel();
             await spinnerTask;
 
             AnalyzeResult result = operation.Value;
             var content = result.Content;
 
-            Console.WriteLine("");
-            Console.WriteLine($"Document was analyzed with model version: {result.ApiVersion}");
-            Console.WriteLine($"Document was analyzed and has {result.Pages.Count} pages and {result.Paragraphs.Count} paragraphs.");
-
+            Console.WriteLine($"\nDocument was analyzed and has {result.Pages.Count} pages and {result.Paragraphs.Count} paragraphs.\n");
 
             foreach (DocumentLanguage language in result.Languages)
             {
-                Console.WriteLine($"  Found language '{language.Locale}' with confidence {language.Confidence}.");
+                Console.WriteLine($"Found language '{language.Locale}' with confidence {language.Confidence}.");
             }
         }
-
+        
         /// <summary>
         /// Finds files in the specified directoryPath that match the specified filePattern.
         /// </summary>
         /// <param name="directoryPath">Absolute filepath</param>
         /// <param name="filePattern">A file pattern, such as *.PDF, *.TIF, etc.</param>
+        /// <param name="totalFiles">Output parameter for total files found</param>
         /// <param name="scanLimit">How deep to scan.</param>
         /// <returns></returns>
-        public static IEnumerable<string> FindFiles(string directoryPath, string filePattern, int scanLimit = int.MaxValue)
+        public static IEnumerable<string> FindFiles(string directoryPath, string filePattern, out int totalFiles, int scanLimit = int.MaxValue)
         {
             try
             {
-                return Directory.GetFiles(directoryPath, filePattern, SearchOption.AllDirectories).Take(scanLimit);
+                string[] allFiles = Directory.GetFiles(directoryPath, filePattern, SearchOption.AllDirectories);
+                totalFiles = allFiles.Length;
+                return allFiles.Take(scanLimit);
             }
             catch (Exception ex)
             {
                 Console.WriteLine("Error occurred: " + ex.Message);
+                totalFiles = 0;
                 return new List<string>();
             }
         }
