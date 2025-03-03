@@ -1,4 +1,4 @@
-﻿﻿using System;
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -6,24 +6,61 @@ using System.Linq;
 using Azure.Core;
 using Azure.AI.DocumentIntelligence;
 using Azure;
+using System.ComponentModel;
+using System.Net.Http.Headers;
+using Azure.AI.OpenAI;
+using OpenAI.Chat;
+using Azure.AI.OpenAI.Chat;
+using System.Text.Json;
+using System.Net.Http.Json;
+using System.Threading.Tasks;
+
+using OpenAI;
+
 
 namespace PlanetTech.AI.DocIntelFlowPoc
 {
     class Program
     {
-        static string key = "XXX";
-        static string endpoint = "https://demo-ak-dot.cognitiveservices.azure.com/";
-        static AzureKeyCredential _credential = new AzureKeyCredential(key);
-        static DocumentIntelligenceClient _docIntelClient = new DocumentIntelligenceClient(new Uri(endpoint), _credential);
+#region "Azure Document Intelligence Declarations"
+        static string DOCINTEL_API_KEY = "XXX";
+        static string DOCINTEL_ENDPOINT = "https://demo-ak-dot.cognitiveservices.azure.com/";
+        static AzureKeyCredential _docIntelCredential = new AzureKeyCredential(DOCINTEL_API_KEY);
+        static DocumentIntelligenceClient _docIntelClient = new DocumentIntelligenceClient(new Uri(DOCINTEL_ENDPOINT), _docIntelCredential);
+#endregion
 
-        public Program()
+#region "Azure OpenAI Declarations"
+        static string OPENAI_API_KEY = "XXX";
+        static string OPENAI_ENDPOINT = "https://deedr-ai.openai.azure.com/";
+        static string? SYSTEM_PROMPT;
+        static readonly HttpClient _openAIClient = new HttpClient();   // LLM to massage raw information after first pass
+        //static short _apiTimeout = 300; // Azure OpenAI API timeout in seconds (might be used in future)
+#endregion
+static Program()
+{
+    Console.Clear();
+
+    _openAIClient.DefaultRequestHeaders.Clear();
+    _openAIClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+    _openAIClient.BaseAddress = new Uri(OPENAI_ENDPOINT);
+    _openAIClient.DefaultRequestHeaders.Add("api-key", OPENAI_API_KEY);
+}
+
+public Program()
         {
             // Create a Document Intelligence client
-            _docIntelClient = new DocumentIntelligenceClient(new Uri(endpoint), _credential);
+            _docIntelClient = new DocumentIntelligenceClient(new Uri(DOCINTEL_ENDPOINT), _docIntelCredential);
+            SYSTEM_PROMPT = File.ReadAllText("system_prompt.txt");
         }
 
         static void Main(string[] args)
         {
+            if (!Directory.Exists("output"))
+            {
+                Directory.CreateDirectory("output");
+                Console.WriteLine("Created output directory...");
+            }
+            
             // Parse command-line arguments for directoryPath, filePattern, and scanLimit
             string directoryPath = @"docs";
             string filePattern = "*.tif";
@@ -79,6 +116,11 @@ namespace PlanetTech.AI.DocIntelFlowPoc
             Console.WriteLine($"Processed {scanLimit} documents successfully in {duration.Seconds} seconds.");
         }
 
+        /// <summary>
+        /// Sends the document to the Azure Document Intelligence service for analysis.
+        /// </summary>
+        /// <param name="document"></param>
+        /// <returns></returns>
         public static async Task AnalyzeDocumentAsync(string document)
         {
             //Uri fileUri = new Uri("https://github.com/PlanetMarc/DocIntelFlowPoc/blob/main/docs/sample1.TIF");
@@ -102,7 +144,18 @@ namespace PlanetTech.AI.DocIntelFlowPoc
             await spinnerTask;
 
             AnalyzeResult result = operation.Value;
-            var content = result.Content;
+
+            // Write the content to a file
+            //File.WriteAllText("output/output.txt", result.Content);
+           
+
+            // What type of document is it?
+            var llm = await LlmProcessDocument(PromptRole.ClassifyDocument, result.Content);
+            Console.WriteLine("\n\n" + "Document Type: " + llm);
+
+            // Extract key value pairs
+            llm = await LlmProcessDocument(PromptRole.ExtractKeyValuePairs, result.Content);
+            Console.WriteLine("\n" + "Key Value Pairs: \n\n" + llm);
 
             Console.WriteLine($"\nDocument was analyzed and has {result.Pages.Count} pages and {result.Paragraphs.Count} paragraphs.\n");
 
@@ -111,7 +164,49 @@ namespace PlanetTech.AI.DocIntelFlowPoc
                 Console.WriteLine($"Found language '{language.Locale}' with confidence {language.Confidence}.");
             }
         }
-        
+
+
+        public static async Task<string> LlmProcessDocument(PromptRole promptRole, string document)
+        {
+
+            // This keeps the context for the LLM
+            var history = new List<ChatMessage>();
+
+            history.Add(new ChatMessage { Role = "user", PromptRole = promptRole, Document = document });
+
+            // Create chat completion options  
+            var options = new ChatCompletionOptions();
+
+            var response = await _openAIClient.PostAsJsonAsync("openai/deployments/o3-mini/chat/completions?api-version=2024-12-01-preview", new
+            {
+                model = "o3-mini",
+                messages = history,
+                stream = false
+            });
+
+            var completion = await response.Content.ReadFromJsonAsync<LlmResponse>();
+
+            // <!-- NOTE: this section only needs to be included if max tokens are configured -->
+            // Setting MaxOutputTokenCount requires a temporary workaround using 2.2.0-beta.1
+            // See related:
+            // https://github.com/Azure/azure-sdk-for-net/pull/48218#issuecomment-2652005055
+            //
+            options
+              .GetType()
+              .GetProperty(
+                  "SerializedAdditionalRawData",
+                  System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+              .SetValue(options, new System.Collections.Generic.Dictionary<string, BinaryData>());
+            options.MaxOutputTokenCount = 100000;
+
+            
+            // check for a null completion...
+            var answer = completion?.Choices?[0]?.Message?.Content ?? "No response from DeedR LLM.";
+
+            return answer;
+        }
+
+
         /// <summary>
         /// Finds files in the specified directoryPath that match the specified filePattern.
         /// </summary>
